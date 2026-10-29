@@ -49,11 +49,24 @@ class StackTests(unittest.TestCase):
         self.assertEqual(list(compose['services']), ['db', 'adminer', 'entry', 'mcp'])
 
     def test_the_major_version_and_libc_match_the_source(self):
-        self.assertRegex(self.service()['image'], r'^postgres:15\.\d+-alpine$')
+        base = self.service()['build']['args']['BASE']
+        self.assertRegex(base, r'^postgres:15\.\d+-alpine@sha256:[0-9a-f]{64}$')
 
-    def test_the_lock_pins_the_same_repository_as_compose(self):
+    def test_the_database_image_is_built_from_this_source(self):
+        service = self.service()
+        self.assertEqual(service['build']['context'], './db')
+        self.assertEqual(service['image'], manage.SERVICE_IMAGE)
+        dockerfile = (STACK / 'db' / 'Dockerfile').read_text(encoding='utf-8')
+        self.assertIn('ARG BASE=postgres:15.15-alpine', dockerfile)
+        # 基底は build.args で差し替え、同じ Alpine・同じ 15.15 の上に拡張だけを足す。
+        self.assertEqual(dockerfile.count('FROM '), 1)
+        self.assertIn('FROM ${BASE}', dockerfile)
+
+    def test_the_lock_pins_only_the_upstream_images(self):
         lock = json.loads((STACK / 'compose.lock.yaml').read_text(encoding='utf-8'))
-        self.assertRegex(lock['services']['db']['image'], r'^postgres@sha256:[0-9a-f]{64}$')
+        self.assertEqual(sorted(lock['services']), ['adminer'])
+        self.assertRegex(lock['services']['adminer']['image'],
+                         r'^adminer@sha256:[0-9a-f]{64}$')
 
     def test_the_port_is_loopback_unless_the_deployment_widens_it(self):
         self.assertEqual(self.service()['ports'],
@@ -99,6 +112,17 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn('PASSWORD', text)
         for forbidden in ('DROP ', 'DELETE ', 'TRUNCATE ', 'UPDATE '):
             self.assertNotIn(forbidden, text, forbidden)
+
+    def test_the_rag_schema_comes_with_pgvector(self):
+        text = (STACK / 'sql/rag.sql').read_text(encoding='utf-8')
+        self.assertIn('CREATE EXTENSION IF NOT EXISTS vector;', text)
+        self.assertIn('CREATE EXTENSION IF NOT EXISTS pg_trgm;', text)
+        self.assertIn('CREATE SCHEMA IF NOT EXISTS rag;', text)
+        self.assertIn('embedding vector(1024)', text)
+        # ロールは SQL が作り、パスワードは manage.py が secrets/rag_password から設定する。
+        self.assertIn('CREATE ROLE pkdb_rag LOGIN', text)
+        self.assertNotIn('PASSWORD', text)
+        self.assertIn((manage.RAG_ROLE, manage.RAG_SECRET), manage.APP_ROLES)
 
     def test_the_mcp_role_only_inherits_the_entry_role(self):
         text = (STACK / 'sql/mcp.sql').read_text(encoding='utf-8')
@@ -299,8 +323,7 @@ class ManageTests(unittest.TestCase):
             manage.dump(client, project)
 
     def test_a_remote_client_needs_the_password_and_keeps_it_out_of_arguments(self):
-        project, _ = self.project()
-        shutil.copyfile(STACK / 'compose.lock.yaml', project / 'compose.lock.yaml')
+        self.project()
         with patch.dict(manage.os.environ, {}, clear=True):
             with self.assertRaises(ValueError):
                 manage.remote('127.0.0.1', 15432, 'postgres')
@@ -311,7 +334,7 @@ class ManageTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertNotIn('s3cret', ' '.join(command))
         self.assertEqual(run.call_args.kwargs['env']['PGPASSWORD'], 's3cret')
-        self.assertTrue(any(part.startswith('postgres@sha256:') for part in command))
+        self.assertTrue(manage.SERVICE_IMAGE in command)
         self.assertEqual(command[-8:], ['pg_dumpall', '-h', '127.0.0.1', '-p', '15432',
                                         '-U', 'postgres', '--globals-only'])
 
@@ -418,8 +441,8 @@ class ManageTests(unittest.TestCase):
         manage.init()
         stored = {role: (project / 'secrets' / secret).read_text(encoding='utf-8').strip()
                   for role, secret in manage.APP_ROLES}
-        self.assertEqual(set(stored), {'pkdb_entry', 'pkdb_mcp'})
-        for returncode, expected in ((0, 0), (2, 2)):
+        self.assertEqual(set(stored), {'pkdb_entry', 'pkdb_mcp', 'pkdb_rag'})
+        for returncode, expected in ((0, 0), (2, len(manage.APP_ROLES))):
             statements = []
 
             def client(program, *args, **kwargs):
@@ -529,7 +552,7 @@ class EntryParsingTests(unittest.TestCase):
 
 
 class BuiltServiceTests(unittest.TestCase):
-    """entry はこのリポジトリで組むので、ダイジェスト固定から外す。"""
+    """db と entry はこのリポジトリで組むので、ダイジェスト固定から外す。"""
 
     def project(self):
         directory = Path(tempfile.mkdtemp(prefix='pkdb-project-'))
@@ -562,7 +585,7 @@ class BuiltServiceTests(unittest.TestCase):
         self.assertEqual(sorted(lock['services']), ['db'])
         self.assertEqual([args for args in calls if args and args[0] == 'pull'], [('pull', 'db')])
 
-    def test_up_rebuilds_the_local_entry_image(self):
+    def test_up_rebuilds_the_local_images(self):
         self.project()
         calls = []
 

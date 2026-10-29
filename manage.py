@@ -2,7 +2,7 @@
 """PostgreSQL for the Pokémon databases on apps-01. Run with sudo.
 
 The server holds sleepy_pkdb, shakeweb and pkhack, moved from the old aarch64
-host by logical dump. ``fetch`` dumps another server with the pinned image's
+host by logical dump. ``fetch`` dumps another server with the database image's
 own client, ``restore`` loads a dump directory without touching a database that
 already exists, and ``backup`` writes the same layout from this server, so a
 backup is restored the same way the migration was.
@@ -20,14 +20,19 @@ import sys
 
 ROOT = Path(__file__).resolve().parent
 SERVICE = 'db'
+# db は pgvector を足すためこのソースから組む（compose.yaml の image と同じ）。
+# 上流のダイジェスト固定はできず、基底だけを build.args で固定する。
+SERVICE_IMAGE = 'shakecloud-pkdb:local'
 SUPERUSER = 'postgres'
 ENTRY_ROLE = 'pkdb_entry'
 ENTRY_SECRET = 'entry_password'
 MCP_ROLE = 'pkdb_mcp'
 MCP_SECRET = 'mcp_password'
+RAG_ROLE = 'pkdb_rag'
+RAG_SECRET = 'rag_password'
 # アプリ専用のロールと、そのパスワードを置く secrets/ のファイル。
-APP_ROLES = ((ENTRY_ROLE, ENTRY_SECRET), (MCP_ROLE, MCP_SECRET))
-GENERATED_SECRETS = ('postgres_password', ENTRY_SECRET, MCP_SECRET)
+APP_ROLES = ((ENTRY_ROLE, ENTRY_SECRET), (MCP_ROLE, MCP_SECRET), (RAG_ROLE, RAG_SECRET))
+GENERATED_SECRETS = ('postgres_password', ENTRY_SECRET, MCP_SECRET, RAG_SECRET)
 STORAGE_DIRECTORY = 'data'
 SOURCE_PASSWORD = 'PKDB_SOURCE_PASSWORD'
 NAME = re.compile(r'^[A-Za-z0-9_]+$')
@@ -113,8 +118,8 @@ def init():
 
 def lock(refresh=False):
     config = json.loads(compose('config', '--format', 'json', locked=False, capture_output=True).stdout)
-    # このリポジトリで組み立てるイメージ（entry）はダイジェストで固定できない。
-    # 上流イメージ（db・adminer）だけを固定し、entry は up --build で作り直す。
+    # このリポジトリで組み立てるイメージ（db・entry・mcp）はダイジェストで固定できない。
+    # 上流イメージ（adminer）だけを固定し、組むものは up --build で作り直す。
     built = {name for name, service in config['services'].items() if service.get('build')}
     path = ROOT / 'compose.lock.yaml'
     old = json.loads(path.read_text()).get('services', {}) if path.exists() else {}
@@ -145,7 +150,7 @@ def lock(refresh=False):
 def up():
     if not (ROOT / 'compose.lock.yaml').exists():
         raise SystemExit('Run lock first')
-    # entry はこのリポジトリのソースから組むので、配備のたびに --build で作り直す。
+    # db・entry・mcp はこのリポジトリのソースから組むので、配備のたびに --build で作り直す。
     compose('up', '-d', '--remove-orphans', '--wait', '--wait-timeout', '300', '--build')
 
 
@@ -155,7 +160,7 @@ def local(program, *args, **kwargs):
 
 
 def remote(host, port, user):
-    """Return a runner for another server, using the pinned image's client.
+    """Return a runner for another server, using the database image's client.
 
     The client must not be newer than this server: pg_restore 15 cannot read an
     archive written by a later pg_dump. The password comes from the environment
@@ -163,7 +168,7 @@ def remote(host, port, user):
     """
     if not os.environ.get(SOURCE_PASSWORD):
         raise ValueError(f'Set {SOURCE_PASSWORD} to the source password')
-    image = json.loads((ROOT / 'compose.lock.yaml').read_text())['services'][SERVICE]['image']
+    image = SERVICE_IMAGE
     env = dict(os.environ, PGPASSWORD=os.environ[SOURCE_PASSWORD])
 
     def runner(program, *args, **kwargs):

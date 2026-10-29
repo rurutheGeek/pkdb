@@ -9,10 +9,17 @@ Docker Compose でまとめて動かします。テーブル定義・登録用�
 
 - `compose.yaml` — db / adminer / entry / mcp の定義
 - `compose.lock.yaml` — 上流イメージのダイジェスト固定（`manage.py lock` が更新）
-- `sql/` — スキーマ、登録用関数、ロールと権限
+- `db/` — DB のイメージ（`postgres:15.15-alpine` に pgvector を足す）
+- `sql/` — スキーマ、登録用関数、ロールと権限、RAG の索引（`rag.sql`）
 - `entry/` — 登録画面（Python / FastAPI）
 - `mcp/` — MCP サーバ（Python）
 - `manage.py` — 初期化・起動・ダンプ・復元・バックアップ
+
+## ポケモンRAG（pgvector）
+
+DB は `postgres:15.15-alpine` に pgvector を足したイメージを `db/Dockerfile` から組みます。基底イメージだけを `compose.yaml` の `build.args` でダイジェスト固定します。公式の `pgvector/pgvector` は Debian なので、libc が musl から glibc に変わり、テキストの照合順序（en_US.utf8）がずれるため使いません。
+
+`sql/rag.sql` が `rag` スキーマと `rag.chunk`（`embedding vector(1024)`）、`pokemondb` を読むだけの `pkdb_rag` ロールを作ります。配備では `entry*.sql` のあとに流れ、何度流しても同じです。パスワードは `secrets/rag_password` に置き、`./manage.py entry-password` が設定します。
 
 ## 動かし方
 
@@ -49,5 +56,5 @@ python3 -m compileall -q manage.py entry mcp tests
 python3 -m unittest discover -s tests
 ```
 
-CI（`.github/workflows/ci.yml`）でも同じ lint・コンパイル・テストと、entry / mcp の
+CI（`.github/workflows/ci.yml`）でも同じ lint・コンパイル・テストと、db / entry / mcp の
 Docker イメージのビルドを行います。
