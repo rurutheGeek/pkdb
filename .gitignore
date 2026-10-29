@@ -1,0 +1,9 @@
+# 配備時に manage.py が作る秘密値とバックアップは Git に置かない。
+.env
+secrets/
+backups/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

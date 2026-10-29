@@ -1,0 +1,31 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+# 同じrefの古い実行は新しい実行で置き換える。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python3 -m pip install ruff pyyaml
+      - name: Lint
+        run: ruff check --select E9,F .
+      - name: Compile Python
+        run: python3 -m compileall -q manage.py entry mcp tests
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests
+      - name: Build the entry image
+        run: docker build -t pkdb-entry:ci entry
+      - name: Build the MCP image
+        run: docker build -t pkdb-mcp:ci mcp

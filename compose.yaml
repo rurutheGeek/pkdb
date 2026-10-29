@@ -45,7 +45,7 @@ services:
       db:
         condition: service_healthy
 
-  # ポケモンDBの登録画面（Web）。リポジトリの stacks/pkdb/entry からイメージを組み、
+  # ポケモンDBの登録画面（Web）。リポジトリの entry/ からイメージを組み、
   # 登録の中身は sql/entry*.sql の関数が持つ。LAN へ出すのは HTTPS 入口（Caddy）だけに
   # し、Authentik の Forward Auth（Remote-User）を前に置く。
   entry:
