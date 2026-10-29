@@ -3,12 +3,19 @@
 # 旧ホスト（aarch64）の PostgreSQL 15 から論理ダンプで移した。版は旧ホストと同じ
 # 15 系・Alpine に揃え、版上げを移行と同時に行わない。照合順序（en_US.utf8）の
 # 並びも旧ホストと同じ musl のものになる。
-# イメージは compose.lock.yaml でダイジェスト固定する。
+# 上流イメージ（adminer）は compose.lock.yaml でダイジェスト固定する。db は
+# pgvector を足すためこのソースから組み、基底だけをダイジェストで固定する。
 name: pkdb
 
 services:
   db:
-    image: postgres:15.15-alpine
+    # pgvector を入れるため、同じ Alpine の上で組む（db/Dockerfile）。
+    # 基底イメージはダイジェストで固定し、照合順序を変えない。
+    build:
+      context: ./db
+      args:
+        BASE: postgres:15.15-alpine@sha256:1d1095b0503145be79c79239372aefadfacf6b7c33c9245bbf99ce4b6b89c737
+    image: shakecloud-pkdb:local
     restart: unless-stopped
     environment:
       # 旧ホストと同じ UTC のままにする（initdb が TZ から timezone を決める）。
