@@ -261,9 +261,28 @@ def roles_sql(text, existing):
     return '\n'.join(kept) + '\n'
 
 
+def dump_directory(directory):
+    """Return the dump to load: the directory itself, or its newest stamp child.
+
+    backup writes destination/<STAMP>/, so restore accepts the same parent that
+    backup was given. The newest stamp by name is used, and named on stderr so
+    the choice is visible.
+    """
+    if (directory / 'manifest.json').is_file():
+        return directory
+    stamps = []
+    if directory.is_dir():
+        stamps = sorted(path for path in directory.iterdir()
+                        if path.is_dir() and STAMP.match(path.name))
+    if not stamps:
+        raise ValueError(f'No manifest.json or stamp directory in {directory}')
+    print(f'Using newest dump: {stamps[-1]}', file=sys.stderr)
+    return stamps[-1]
+
+
 def restore(directory):
     """Load a dump directory. A database that already exists is left alone."""
-    directory = Path(directory).resolve()
+    directory = dump_directory(Path(directory).resolve())
     manifest = json.loads((directory / 'manifest.json').read_text())
     names = manifest['databases']
     for name in names:

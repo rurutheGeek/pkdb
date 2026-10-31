@@ -5,7 +5,9 @@ version must stay the one the dump was taken with, the superuser password must
 never be regenerated or overwritten by the old server's, and a restore must not
 touch a database that already holds data.
 """
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
@@ -338,15 +340,52 @@ class ManageTests(unittest.TestCase):
         self.assertEqual(command[-8:], ['pg_dumpall', '-h', '127.0.0.1', '-p', '15432',
                                         '-U', 'postgres', '--globals-only'])
 
-    def restore_fixture(self, project):
-        directory = project / 'dump'
-        directory.mkdir()
+    def backup_fixture(self, project, stamp, names):
+        directory = project / 'backups' / stamp
+        directory.mkdir(parents=True)
         (directory / 'globals.sql').write_text(GLOBALS, encoding='utf-8')
-        for name in ('pkhack', 'sleepy_pkdb'):
+        for name in names:
             (directory / f'{name}.dump').write_bytes(b'archive')
         (directory / 'manifest.json').write_text(
-            json.dumps({'databases': ['pkhack', 'sleepy_pkdb']}), encoding='utf-8')
+            json.dumps({'databases': list(names)}), encoding='utf-8')
         return directory
+
+    def restore_fixture(self, project):
+        return self.backup_fixture(project, 'dump', ('pkhack', 'sleepy_pkdb'))
+
+    def test_restore_uses_the_newest_stamp_under_the_backup_destination(self):
+        project, _ = self.project()
+        self.backup_fixture(project, '20260101T000000Z', ('pkhack',))
+        newest = self.backup_fixture(project, '20260102T000000Z', ('pkhack', 'sleepy_pkdb'))
+        client, _ = self.client(names=())
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(manage, 'local', client), contextlib.redirect_stdout(stdout), \
+             contextlib.redirect_stderr(stderr):
+            manage.restore(project / 'backups')
+        self.assertEqual(stdout.getvalue().strip(), 'CHANGED: restored pkhack, sleepy_pkdb')
+        self.assertEqual(stderr.getvalue().splitlines(), [f'Using newest dump: {newest}'])
+
+    def test_restore_ignores_an_older_stamp(self):
+        project, _ = self.project()
+        # 古い stamp は不完全（dump が無い）。選ばれたら ValueError になる。
+        self.backup_fixture(project, '20260101T000000Z', ('pkhack',))
+        (project / 'backups' / '20260101T000000Z' / 'pkhack.dump').unlink()
+        self.backup_fixture(project, '20260102T000000Z', ('pkhack',))
+        (project / 'backups' / 'notes').mkdir()
+        client, _ = self.client(names=())
+        stdout = io.StringIO()
+        with patch.object(manage, 'local', client), contextlib.redirect_stdout(stdout), \
+             contextlib.redirect_stderr(io.StringIO()):
+            manage.restore(project / 'backups')
+        self.assertEqual(stdout.getvalue().strip(), 'CHANGED: restored pkhack')
+
+    def test_restore_refuses_a_directory_without_a_manifest_or_stamp(self):
+        project, _ = self.project()
+        directory = project / 'backups'
+        directory.mkdir()
+        (directory / 'notes').mkdir()
+        with self.assertRaises(ValueError):
+            manage.restore(directory)
 
     def test_restore_leaves_an_existing_database_alone(self):
         project, _ = self.project()
